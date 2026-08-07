@@ -68,7 +68,7 @@ DELAY_BETWEEN_CHUNKS = 0.6
 RETRY_DELAYS = [3, 8, 20]
 
 ANTHROPIC_MODEL = "claude-sonnet-4-5"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 TRANSLATION_SYSTEM_PROMPT = (
@@ -360,3 +360,4 @@ def proofread_text(text: str) -> str:
     """
     edited, _label = proofread_text_labeled(text)
     return edited
+  
