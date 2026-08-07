@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+reportlab
+tqdm
+pypdf
+Pillow
+deep-translator
+arabic-reshaper
+python-bidi==0.4.2
