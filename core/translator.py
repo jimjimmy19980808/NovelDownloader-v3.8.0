@@ -75,24 +75,34 @@ TRANSLATION_SYSTEM_PROMPT = (
     "You are a professional literary translator. Translate the given "
     "English web-novel chapter text into natural, fluent Persian (Farsi) "
     "suitable for a printed book. Preserve paragraph breaks exactly "
-    "(one blank line between paragraphs). Preserve dialogue as dialogue - "
-    "natural spoken Persian, not stiff literal phrasing. Keep character "
-    "names transliterated consistently. Output ONLY the translated Persian "
+    "(one blank line between paragraphs). Preserve the exact order of "
+    "sentences and clauses within every paragraph - never reorder, move, "
+    "or rearrange ideas even if a different order would sound smoother; "
+    "translate each sentence in the position it already occupies. "
+    "Preserve dialogue as dialogue - natural spoken Persian, not stiff "
+    "literal phrasing. Keep character names transliterated consistently, "
+    "and do not prefix a name with 'this/that' (این/آن) unless the "
+    "original English text explicitly does so to distinguish between "
+    "two people of the same name. Output ONLY the translated Persian "
     "text - no notes, no explanations, no English, no markdown formatting."
 )
 
 EDIT_SYSTEM_PROMPT = (
     "You are a copy editor. The text given to you may be in English or in "
     "Persian (Farsi) - detect which, and proofread it IN THAT SAME "
-    "LANGUAGE. Do not translate it. Fix only: grammar (correct "
+    "LANGUAGE. Do not translate it. Fix ONLY: grammar (correct "
     "subject-verb agreement, verb tense/conjugation consistency), "
     "punctuation (quotation marks, commas, sentence-ending marks), typos, "
     "and spacing. Preserve the exact paragraph structure (one blank line "
-    "between paragraphs), all dialogue, all plot content, and the "
-    "author's voice/style - do not summarize, shorten, expand, censor, or "
-    "rewrite sentences beyond what's needed to fix grammar/punctuation. "
-    "Output ONLY the corrected text - no notes, no explanations, no "
-    "markdown formatting."
+    "between paragraphs), the exact order of sentences and clauses within "
+    "every paragraph, all dialogue, all plot content, and the author's "
+    "voice/style. Do NOT reorder, move, or rearrange any sentence or "
+    "clause for any reason, even if a different order would read more "
+    "smoothly - only fix grammar/punctuation of the sentence exactly "
+    "where it already is. Do not summarize, shorten, expand, censor, or "
+    "rewrite beyond what's needed to fix grammar/punctuation. Output ONLY "
+    "the corrected text - no notes, no explanations, no markdown "
+    "formatting."
 )
 
 
@@ -105,7 +115,11 @@ def _split_into_chunks(text: str, max_chars: int) -> list[str]:
     Split text into pieces under max_chars, breaking on paragraph
     boundaries ("\\n\\n") wherever possible so a chunk boundary never lands
     in the middle of a sentence unless a single paragraph itself is too
-    long (rare, but handled by a hard split as a last resort).
+    long (rare - handled below by splitting at a SENTENCE boundary rather
+    than an arbitrary character offset, so a sentence never gets cut in
+    half and translated as two disconnected fragments with no shared
+    context, which is what previously caused garbled/reordered-looking
+    output for unusually long paragraphs).
     """
     paragraphs = text.split("\n\n")
     chunks: list[str] = []
@@ -125,13 +139,54 @@ def _split_into_chunks(text: str, max_chars: int) -> list[str]:
         if len(paragraph) <= max_chars:
             current = paragraph
         else:
-            for i in range(0, len(paragraph), max_chars):
-                chunks.append(paragraph[i : i + max_chars])
+            for piece in _split_long_paragraph(paragraph, max_chars):
+                chunks.append(piece)
 
     if current:
         chunks.append(current)
 
     return chunks
+
+
+def _split_long_paragraph(paragraph: str, max_chars: int) -> list[str]:
+    """
+    Splits a single over-long paragraph at sentence boundaries (after
+    ., !, ?, ۔, or their Persian/Arabic equivalents ، ۔ ؟ followed by
+    whitespace) so each piece ends on a complete sentence. Falls back to a
+    raw character cut only if no sentence boundary exists at all within a
+    max_chars-sized window (e.g. one truly enormous run-on sentence).
+    """
+    import re
+
+    sentence_end = re.compile(r'(?<=[.!?؟۔])\s+')
+    sentences = sentence_end.split(paragraph)
+
+    pieces: list[str] = []
+    current = ""
+
+    for sentence in sentences:
+        candidate = f"{current} {sentence}" if current else sentence
+
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        if current:
+            pieces.append(current)
+            current = ""
+
+        if len(sentence) <= max_chars:
+            current = sentence
+        else:
+            # A single "sentence" is itself too long (no punctuation to
+            # split on) - only now fall back to a raw character cut.
+            for i in range(0, len(sentence), max_chars):
+                pieces.append(sentence[i : i + max_chars])
+
+    if current:
+        pieces.append(current)
+
+    return pieces
 
 
 def _translate_google(text: str, target_lang: str, source_lang: str) -> str:
@@ -360,4 +415,3 @@ def proofread_text(text: str) -> str:
     """
     edited, _label = proofread_text_labeled(text)
     return edited
-  
