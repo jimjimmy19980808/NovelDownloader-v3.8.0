@@ -430,6 +430,20 @@ class PDFMaker:
     # Table of contents (page 3)
     # -----------------------------------------------------------------
 
+    @staticmethod
+    def _is_generic_title(chapter) -> bool:
+        """
+        True if the chapter's ORIGINAL (untranslated) title is just a
+        generic "Chapter N" placeholder rather than a real, distinct
+        title - which is the case for sites (like FreeWebNovel) that
+        don't expose per-chapter titles at all. In that case, a
+        translated version of "Chapter 51" (e.g. Gemini sometimes
+        spelling it out as "فصل پنجاه و یکم") should NOT be appended
+        after our own "{label} {number}:" prefix - that just duplicates
+        the chapter number/word in two different forms.
+        """
+        return chapter.title.strip().lower() == f"chapter {chapter.number}".lower()
+
     def _toc_flowables(self, chapters, chapter_titles, page_numbers, language, styles):
         labels = LABELS[language]
         t = lambda s: self._text(s, language)  # noqa: E731
@@ -437,8 +451,13 @@ class PDFMaker:
 
         for chapter in chapters:
             page = page_numbers.get(chapter.number, "-")
-            title = chapter_titles.get(chapter.number, chapter.title)
-            label = t(f"{labels['chapter']} {chapter.number}: {title}")
+
+            if self._is_generic_title(chapter):
+                label = t(f"{labels['chapter']} {chapter.number}")
+            else:
+                title = chapter_titles.get(chapter.number, chapter.title)
+                label = t(f"{labels['chapter']} {chapter.number}: {title}")
+
             rows.append([Paragraph(label, styles["toc_entry"]), Paragraph(str(page), styles["toc_entry"])])
 
         col_widths = [135 * mm, 15 * mm]
@@ -468,7 +487,12 @@ class PDFMaker:
         on for the table of contents.
         """
         labels = LABELS[language]
-        text = self._text(f"{labels['chapter']} {chapter.number}: {title}", language)
+
+        if self._is_generic_title(chapter):
+            text = self._text(f"{labels['chapter']} {chapter.number}", language)
+        else:
+            text = self._text(f"{labels['chapter']} {chapter.number}: {title}", language)
+
         heading = Paragraph(text, styles["chapter"])
         heading._chapter_number = chapter.number
         return heading
@@ -503,202 +527,4 @@ class PDFMaker:
         content.append(PageBreak())
 
         content.extend(
-            self._info_page_flowables(
-                display_title, novel, chapters, total_known_chapters, language, styles, chapter_backend_labels
-            )
-        )
-        content.append(PageBreak())
-
-        content.extend(self._toc_flowables(chapters, chapter_titles, page_numbers, language, styles))
-        content.append(PageBreak())
-
-        for chapter in chapters:
-            title = chapter_titles.get(chapter.number, chapter.title)
-            content.append(self._chapter_heading(chapter, title, language, styles))
-
-            body = chapter_bodies.get(chapter.number, chapter.content)
-            text = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-            for paragraph in text.split("\n\n"):
-                paragraph = paragraph.strip()
-                if paragraph:
-                    content.append(Paragraph(self._text(paragraph, language), styles["body"]))
-
-            content.append(PageBreak())
-
-        return content
-
-    def get_next_part(self, novel_title: str) -> int:
-        folder = self.novel_folder(novel_title)
-
-        if not folder.exists():
-            return 1
-
-        parts = []
-
-        for file in folder.glob("*.pdf"):
-            match = re.search(r"Part_(\d+)", file.name)
-            if match:
-                parts.append(int(match.group(1)))
-
-        if not parts:
-            return 1
-
-        return max(parts) + 1
-
-    def create_pdf(
-        self,
-        novel_title,
-        chapters,
-        part_number,
-        novel=None,
-        total_known_chapters=0,
-        language="en",
-        display_title=None,
-        chapter_titles=None,
-        chapter_bodies=None,
-        chapter_backend_labels=None,
-    ):
-        """
-        Build a single PDF for `chapters`. The chapter numbers are embedded
-        in the PDF's Keywords metadata field (e.g. "chapters=1,2,3,4") so
-        Library can later determine exactly which chapters this PDF
-        contains - independent of language, since folder/filename are
-        always keyed by the ORIGINAL (English) novel_title even when the
-        PDF's rendered content is translated (display_title).
-
-        Layout: cover -> info page -> table of contents -> chapters, with
-        page numbers in the footer of every page after the cover. The
-        table of contents needs to know which page each chapter starts on
-        - not knowable until the document is actually laid out - so this
-        builds the PDF twice: once (to a throwaway buffer) purely to record
-        real page numbers, then a second time (to the real file) using
-        those numbers to render the actual table of contents.
-
-        `display_title`/`chapter_titles`/`chapter_bodies` let the caller
-        supply translated text for what's actually RENDERED, while
-        `novel_title`/`chapters[*].number` (used for the folder/filename
-        and metadata) always stay tied to the original English identity.
-
-        `chapter_backend_labels` (chapter number -> human-readable string
-        like "Gemini" or "Gemini, partially fell back to Google
-        Translate") is summarized on the info page so it's always visible
-        which AI backend actually processed each chapter - including a
-        silent mid-run fallback from your configured backend.
-        """
-        folder = self.novel_folder(novel_title)
-        folder.mkdir(parents=True, exist_ok=True)
-
-        start = chapters[0].number
-        end = chapters[-1].number
-
-        filename = (
-            folder
-            / f"{safe_filename(novel_title)}_Part_{part_number:03d}_Ch_{start}-{end}.pdf"
-        )
-
-        chapter_numbers = ",".join(str(chapter.number) for chapter in chapters)
-        display_title = display_title or novel_title
-        chapter_titles = chapter_titles or {}
-        chapter_bodies = chapter_bodies or {}
-        styles = self._build_styles(language)
-
-        doc_kwargs = dict(
-            pagesize=A4,
-            rightMargin=20 * mm,
-            leftMargin=20 * mm,
-            topMargin=20 * mm,
-            bottomMargin=20 * mm,
-            title=display_title,
-            author=(getattr(novel, "author", None) or "Unknown Author") if novel else "Unknown Author",
-            subject=f"Chapters {start}-{end}",
-            creator="NovelDownloader",
-            keywords=f"chapters={chapter_numbers};generated={datetime.now().isoformat(timespec='seconds')}",
-        )
-
-        build_args = dict(
-            display_title=display_title,
-            chapters=chapters,
-            novel=novel,
-            total_known_chapters=total_known_chapters,
-            language=language,
-            chapter_titles=chapter_titles,
-            chapter_bodies=chapter_bodies,
-            styles=styles,
-            chapter_backend_labels=chapter_backend_labels,
-        )
-
-        # Pass 1: throwaway build just to discover real chapter page numbers.
-        draft_buffer = io.BytesIO()
-        draft_doc = NovelDocTemplate(draft_buffer, **doc_kwargs)
-        draft_content = self._build_content(page_numbers={}, **build_args)
-        draft_doc.build(draft_content, canvasmaker=NumberedCanvas)
-        page_numbers = draft_doc.chapter_page_numbers
-
-        # Pass 2: the real file, with an accurate table of contents.
-        final_doc = NovelDocTemplate(str(filename), **doc_kwargs)
-        final_content = self._build_content(page_numbers=page_numbers, **build_args)
-        final_doc.build(final_content, canvasmaker=NumberedCanvas)
-
-        return filename
-
-    def split_and_create(
-        self,
-        novel_title,
-        chapters,
-        per_pdf=DEFAULT_CHAPTERS_PER_PDF,
-        novel=None,
-        total_known_chapters=0,
-        language="en",
-        display_title=None,
-        chapter_titles=None,
-        chapter_bodies=None,
-        chapter_backend_labels=None,
-    ):
-        files = []
-        part = self.get_next_part(novel_title)
-
-        total = (len(chapters) + per_pdf - 1) // per_pdf
-
-        print()
-
-        with progress_bar(total=total, desc="Creating PDFs", unit="pdf") as progress:
-            for index in range(0, len(chapters), per_pdf):
-                batch = chapters[index:index + per_pdf]
-
-                files.append(
-                    self.create_pdf(
-                        novel_title,
-                        batch,
-                        part,
-                        novel=novel,
-                        total_known_chapters=total_known_chapters,
-                        language=language,
-                        display_title=display_title,
-                        chapter_titles=chapter_titles,
-                        chapter_bodies=chapter_bodies,
-                        chapter_backend_labels=chapter_backend_labels,
-                    )
-                )
-
-                part += 1
-                progress.update(1)
-
-        print("PDFs saved successfully.")
-
-        return files
-
-    @staticmethod
-    def health_check(pdf_path: Path) -> bool:
-        """
-        Returns True if the PDF opens and has at least one page.
-        (Detects corrupted/incomplete PDFs.)
-        """
-        try:
-            from pypdf import PdfReader
-
-            reader = PdfReader(str(pdf_path))
-            return len(reader.pages) > 0
-        except Exception as error:
-            log.warning(f"PDF health check failed for {pdf_path.name}: {error}")
-            return False
+        
